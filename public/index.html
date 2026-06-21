@@ -32,9 +32,9 @@
         <label for="room-select">Espacios:</label>
         <select id="room-select" disabled>
             <option value="General">General</option>
-            <option value="Tecnología">Tecnología</option>
-            <option value="Juegos">Juegos</option>
         </select>
+        <button id="create-room-btn" type="button" disabled>Crear sala</button>
+        <button id="delete-room-btn" type="button" disabled>Borrar sala</button>
     </div>
     <div id="search-container">
         <input id="search-input" type="search" placeholder="Buscar en el historial..." autocomplete="off">
@@ -46,6 +46,7 @@
     <form id="form-container">
         <input type="text" id="message-input" placeholder="Escribe tu mensaje..." autocomplete="off" required disabled>
         <button type="submit" disabled>Enviar</button>
+        <button type="button" id="whisper-btn" disabled>Normal</button>
         <button type="button" id="emoji-btn" disabled>😊</button>
         <button type="button" id="send-file-btn" disabled>Enviar imagen</button>
         <button type="button" id="record-btn" disabled>🎙️</button>

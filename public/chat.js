@@ -12,12 +12,14 @@ const form = document.getElementById('form-container');
 const input = document.getElementById('message-input');
 const chatContainer = document.getElementById('chat-container');
 const roomSelect = document.getElementById('room-select');
-const newRoomBtn = document.getElementById('new-room-btn');
+const createRoomBtn = document.getElementById('create-room-btn');
+const deleteRoomBtn = document.getElementById('delete-room-btn');
 const searchInput = document.getElementById('search-input');
 const searchClearBtn = document.getElementById('search-clear-btn');
 const emojiBtn = document.getElementById('emoji-btn');
 const emojiPicker = document.getElementById('emoji-picker');
 const sendButton = form.querySelector('button[type="submit"]');
+const whisperBtn = document.getElementById('whisper-btn');
 const sendFileBtn = document.getElementById('send-file-btn');
 const fileInput = document.getElementById('file-input');
 const notificationBadge = document.getElementById('notification-badge');
@@ -36,6 +38,8 @@ let currentSearch = '';
 let unseenCount = 0;
 let isWindowFocused = true;
 const titleBase = document.title;
+const whisperDurations = [0, 10, 20, 30];
+const quickReactions = ['🔥', '😂', '💡', '💖'];
 
 // Audio recording state
 let mediaRecorder = null;
@@ -43,6 +47,8 @@ let audioChunks = [];
 let isRecording = false;
 let recordingStartTime = 0;
 let recordingTimerInterval = null;
+let whisperSeconds = 0;
+const whisperTimers = new Map();
 
 function updateHeaderRoom() {
     if (headerTitle) {
@@ -131,7 +137,8 @@ if (emojiBtn) emojiBtn.disabled = true;
 if (sendFileBtn) sendFileBtn.disabled = true;
 if (recordBtn) recordBtn.disabled = true;
 if (roomSelect) roomSelect.disabled = true;
-if (newRoomBtn) newRoomBtn.disabled = true;
+if (createRoomBtn) createRoomBtn.disabled = true;
+if (deleteRoomBtn) deleteRoomBtn.disabled = true;
 
 function updateNotificationDisplay() {
     if (!notificationBadge) return;
@@ -149,6 +156,99 @@ function updateNotificationDisplay() {
 function resetNotifications() {
     unseenCount = 0;
     updateNotificationDisplay();
+}
+
+function setWhisperMode(seconds) {
+    whisperSeconds = seconds;
+    if (!whisperBtn) return;
+    whisperBtn.textContent = seconds > 0 ? `Susurro ${seconds}s` : 'Normal';
+    whisperBtn.classList.toggle('is-whisper', seconds > 0);
+}
+
+function cycleWhisperMode() {
+    const currentIndex = whisperDurations.indexOf(whisperSeconds);
+    const next = whisperDurations[(currentIndex + 1) % whisperDurations.length];
+    setWhisperMode(next);
+}
+
+function scheduleWhisperRemoval(item) {
+    if (!item?.id || !item.expiresAt) return;
+    const remaining = item.expiresAt - Date.now();
+    if (remaining <= 0) {
+        removeMessageById(item.room, item.id);
+        return;
+    }
+    const timeout = setTimeout(() => {
+        removeMessageById(item.room, item.id);
+        whisperTimers.delete(item.id);
+    }, remaining);
+    whisperTimers.set(item.id, timeout);
+}
+
+function removeMessageById(room, id) {
+    if (!roomMessages[room]) return;
+    roomMessages[room] = roomMessages[room].filter((entry) => entry.id !== id);
+    if (room === currentRoom) renderHistory();
+}
+
+function addReactionButtons(item, container) {
+    if (item.usuario !== miNombre || !item.id) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'quick-reactions';
+
+    quickReactions.forEach((emoji) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'quick-reaction-btn';
+        btn.textContent = emoji;
+        btn.addEventListener('click', () => {
+            socket.emit('message-reaction', {
+                room: item.room || currentRoom,
+                messageId: item.id,
+                emoji
+            });
+        });
+        wrap.appendChild(btn);
+    });
+
+    container.appendChild(wrap);
+}
+
+function renderPoll(item, container) {
+    const pollWrap = document.createElement('div');
+    pollWrap.className = 'poll-box';
+
+    const title = document.createElement('div');
+    title.className = 'poll-question';
+    title.textContent = item.poll?.question || 'Encuesta';
+    pollWrap.appendChild(title);
+
+    (item.poll?.options || []).forEach((option, index) => {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'poll-option';
+        const votes = Number((item.poll?.votes && item.poll.votes[index]) || 0);
+        row.textContent = `${option} (${votes})`;
+        row.addEventListener('click', () => {
+            socket.emit('poll-vote', {
+                room: item.room || currentRoom,
+                messageId: item.id,
+                optionIndex: index
+            });
+        });
+        pollWrap.appendChild(row);
+    });
+
+    container.appendChild(pollWrap);
+}
+
+function addReactionSummary(item, container) {
+    const entries = Object.entries(item.reactions || {}).filter(([, count]) => Number(count) > 0);
+    if (entries.length === 0) return;
+    const summary = document.createElement('div');
+    summary.className = 'reaction-summary';
+    summary.textContent = entries.map(([emoji, count]) => `${emoji} ${count}`).join('  ');
+    container.appendChild(summary);
 }
 
 async function startRecording() {
@@ -227,7 +327,7 @@ function sendAudio(dataUrl) {
         Swal.fire('Error', 'Debes ingresar un nombre antes de enviar audios.', 'warning');
         return;
     }
-    const payload = { room: currentRoom, dataUrl };
+    const payload = { room: currentRoom, dataUrl, playbackRate: 1 };
     socket.emit('mensaje-audio', payload, (status) => {
         if (status !== 'ok') console.error('Audio upload failed', status);
     });
@@ -241,6 +341,7 @@ function matchesSearch(item, query) {
     if (item.type === 'imagen' && item.name && item.name.toLowerCase().includes(normalized)) return true;
     if (item.type === 'audio' && item.name && item.name.toLowerCase().includes(normalized)) return true;
     if (item.type === 'system' && item.mensaje && item.mensaje.toLowerCase().includes(normalized)) return true;
+    if (item.type === 'poll' && item.poll?.question?.toLowerCase().includes(normalized)) return true;
     return false;
 }
 
@@ -272,6 +373,14 @@ function createMessageElement(item) {
         texto.className = 'texto';
         texto.textContent = item.mensaje;
         div.appendChild(texto);
+        if (item.whisperSeconds > 0 && item.expiresAt) {
+            const whisperTag = document.createElement('div');
+            whisperTag.className = 'whisper-tag';
+            whisperTag.textContent = `Se borra en ${item.whisperSeconds}s`;
+            div.appendChild(whisperTag);
+        }
+        addReactionButtons(item, div);
+        addReactionSummary(item, div);
     } else if (item.type === 'imagen') {
         const imagen = document.createElement('div');
         imagen.className = 'imagen-mensaje';
@@ -280,6 +389,8 @@ function createMessageElement(item) {
         img.alt = item.name || 'Imagen enviada';
         imagen.appendChild(img);
         div.appendChild(imagen);
+        addReactionButtons(item, div);
+        addReactionSummary(item, div);
     } else if (item.type === 'audio') {
         const audioContainer = document.createElement('div');
         audioContainer.className = 'audio-mensaje';
@@ -287,8 +398,32 @@ function createMessageElement(item) {
         audio.controls = true;
         audio.src = item.dataUrl;
         audio.style.maxWidth = '100%';
+        audio.playbackRate = Number(item.playbackRate || 1);
         audioContainer.appendChild(audio);
+
+        const speeds = document.createElement('div');
+        speeds.className = 'audio-speeds';
+        [1, 1.5, 2].forEach((speed) => {
+            const speedBtn = document.createElement('button');
+            speedBtn.type = 'button';
+            speedBtn.className = 'audio-speed-btn';
+            speedBtn.textContent = `${speed}x`;
+            speedBtn.addEventListener('click', () => {
+                audio.playbackRate = speed;
+                Array.from(speeds.children).forEach((btn) => btn.classList.remove('active'));
+                speedBtn.classList.add('active');
+            });
+            if (speed === Number(item.playbackRate || 1)) {
+                speedBtn.classList.add('active');
+            }
+            speeds.appendChild(speedBtn);
+        });
+        audioContainer.appendChild(speeds);
         div.appendChild(audioContainer);
+        addReactionButtons(item, div);
+        addReactionSummary(item, div);
+    } else if (item.type === 'poll') {
+        renderPoll(item, div);
     }
 
     div.appendChild(hora);
@@ -343,6 +478,112 @@ function addRoomIfNeeded(room) {
         option.textContent = room;
         roomSelect.appendChild(option);
     }
+}
+
+function renderRoomOptions(rooms = []) {
+    if (!roomSelect) return;
+    const previous = currentRoom || roomSelect.value || defaultRoom;
+    roomSelect.innerHTML = '';
+
+    rooms.forEach((room) => {
+        const option = document.createElement('option');
+        option.value = room;
+        option.textContent = room;
+        roomSelect.appendChild(option);
+        if (!roomMessages[room]) roomMessages[room] = [];
+    });
+
+    const nextRoom = rooms.includes(previous) ? previous : defaultRoom;
+    if (rooms.includes(nextRoom)) {
+        roomSelect.value = nextRoom;
+        if (currentRoom && currentRoom !== nextRoom) {
+            currentRoom = nextRoom;
+            updateHeaderRoom();
+            renderHistory();
+        }
+    }
+}
+
+async function requestRoomCode(title) {
+    const result = await Swal.fire({
+        title,
+        html: `
+            <div style="display:grid; gap:8px; text-align:left;">
+                <input id="swal-room-code" class="swal2-input" type="password" placeholder="Codigo" maxlength="4" />
+                <small style="color:#6b7280;">Codigo requerido para confirmar.</small>
+            </div>
+        `,
+        confirmButtonText: 'Confirmar',
+        showCancelButton: true,
+        focusConfirm: false,
+        preConfirm: () => {
+            const code = document.getElementById('swal-room-code')?.value || '';
+            if (!code.trim()) {
+                Swal.showValidationMessage('Ingresa el codigo.');
+                return false;
+            }
+            return code.trim();
+        }
+    });
+
+    if (!result.isConfirmed) return null;
+    return result.value;
+}
+
+async function createRoomFlow() {
+    const roomResult = await Swal.fire({
+        title: 'Crear sala',
+        input: 'text',
+        inputLabel: 'Nombre de sala',
+        inputPlaceholder: 'Ejemplo: Musica',
+        showCancelButton: true,
+        inputValidator: (value) => {
+            const cleaned = String(value || '').trim();
+            if (!cleaned) return 'Ingresa un nombre.';
+            if (cleaned.length < 2) return 'La sala debe tener al menos 2 caracteres.';
+            return null;
+        }
+    });
+
+    if (!roomResult.isConfirmed) return;
+    const roomName = String(roomResult.value || '').trim();
+    const code = await requestRoomCode('Confirmar creacion');
+    if (!code) return;
+
+    socket.emit('room-create', { name: roomName, code }, (response) => {
+        if (!response?.ok) {
+            Swal.fire('No se pudo crear', response?.error || 'Error desconocido.', 'error');
+            return;
+        }
+        joinRoom(response.room || roomName);
+    });
+}
+
+async function deleteRoomFlow() {
+    if (!currentRoom || currentRoom === defaultRoom) {
+        Swal.fire('Accion no permitida', 'La sala General no se puede borrar.', 'info');
+        return;
+    }
+
+    const confirm = await Swal.fire({
+        title: `Borrar sala ${currentRoom}?`,
+        text: 'Los usuarios en esa sala volveran a General.',
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: 'Continuar'
+    });
+    if (!confirm.isConfirmed) return;
+
+    const code = await requestRoomCode('Confirmar borrado');
+    if (!code) return;
+
+    socket.emit('room-delete', { room: currentRoom, code }, (response) => {
+        if (!response?.ok) {
+            Swal.fire('No se pudo borrar', response?.error || 'Error desconocido.', 'error');
+            return;
+        }
+        joinRoom(response.fallbackRoom || defaultRoom);
+    });
 }
 
 function playSound(type) {
@@ -404,7 +645,10 @@ function enableChat(name) {
     if (emojiBtn) emojiBtn.disabled = false;
     if (sendFileBtn) sendFileBtn.disabled = false;
     if (recordBtn) recordBtn.disabled = false;
+    if (whisperBtn) whisperBtn.disabled = false;
     if (roomSelect) roomSelect.disabled = false;
+    if (createRoomBtn) createRoomBtn.disabled = false;
+    if (deleteRoomBtn) deleteRoomBtn.disabled = false;
     joinRoom(defaultRoom);
     updateHeaderRoom();
     input.focus();
@@ -495,7 +739,22 @@ form.addEventListener('submit', (e) => {
 
     const texto = input.value.trim();
     if (texto) {
-        socket.emit('mensaje-chat', { room: currentRoom, mensaje: texto });
+        if (texto.startsWith('/poll ')) {
+            const pollBody = texto.slice(6).trim();
+            const parts = pollBody.split('|').map((part) => part.trim()).filter(Boolean);
+            if (parts.length < 3) {
+                Swal.fire('Encuesta', 'Usa: /poll Pregunta | Opcion 1 | Opcion 2', 'info');
+                return;
+            }
+            const [question, ...options] = parts;
+            socket.emit('poll-create', { room: currentRoom, question, options });
+        } else {
+            socket.emit('mensaje-chat', {
+                room: currentRoom,
+                mensaje: texto,
+                whisperSeconds
+            });
+        }
         input.value = '';
     }
 });
@@ -506,22 +765,52 @@ if (roomSelect) {
     });
 }
 
+if (createRoomBtn) {
+    createRoomBtn.addEventListener('click', createRoomFlow);
+}
+
+if (deleteRoomBtn) {
+    deleteRoomBtn.addEventListener('click', deleteRoomFlow);
+}
+
 
 socket.on('roomHistory', ({ room, history }) => {
     if (!room) return;
     roomMessages[room] = history || [];
+    roomMessages[room].forEach((entry) => {
+        if (entry.whisperSeconds > 0 && entry.expiresAt) {
+            scheduleWhisperRemoval(entry);
+        }
+    });
     addRoomIfNeeded(room);
     if (room === currentRoom) renderHistory();
+});
+
+socket.on('rooms-update', ({ rooms }) => {
+    renderRoomOptions(Array.isArray(rooms) ? rooms : [defaultRoom]);
+});
+
+socket.on('room-deleted', ({ deletedRoom, fallbackRoom }) => {
+    if (currentRoom === deletedRoom) {
+        joinRoom(fallbackRoom || defaultRoom);
+    }
 });
 
 socket.on('mensaje-chat', (data) => {
     addHistory({
         type: 'texto',
+        id: data.id,
         room: data.room || currentRoom,
         usuario: data.usuario,
         mensaje: data.mensaje,
-        hora: data.hora
+        hora: data.hora,
+        reactions: data.reactions || {},
+        whisperSeconds: Number(data.whisperSeconds || 0),
+        expiresAt: data.expiresAt || null
     });
+    if (Number(data.whisperSeconds || 0) > 0 && data.expiresAt) {
+        scheduleWhisperRemoval({ id: data.id, room: data.room || currentRoom, expiresAt: data.expiresAt });
+    }
     notifyNewMessage(data.room || currentRoom, data.usuario);
 });
 
@@ -540,13 +829,46 @@ socket.on('mensaje-imagen', (data) => {
 socket.on('mensaje-audio', (data) => {
     addHistory({
         type: 'audio',
+        id: data.id,
         room: data.room || currentRoom,
         usuario: data.usuario,
         dataUrl: data.dataUrl,
         name: 'Nota de voz',
+        hora: data.hora,
+        playbackRate: Number(data.playbackRate || 1),
+        reactions: data.reactions || {}
+    });
+    notifyNewMessage(data.room || currentRoom, data.usuario);
+});
+
+socket.on('poll-create', (data) => {
+    addHistory({
+        type: 'poll',
+        id: data.id,
+        room: data.room || currentRoom,
+        usuario: data.usuario,
+        poll: data.poll,
         hora: data.hora
     });
     notifyNewMessage(data.room || currentRoom, data.usuario);
+});
+
+socket.on('poll-update', (data) => {
+    const room = data.room || currentRoom;
+    const history = roomMessages[room] || [];
+    const target = history.find((entry) => entry.id === data.id);
+    if (!target) return;
+    target.poll = data.poll;
+    if (room === currentRoom) renderHistory();
+});
+
+socket.on('message-reaction', (data) => {
+    const room = data.room || currentRoom;
+    const history = roomMessages[room] || [];
+    const target = history.find((entry) => entry.id === data.messageId);
+    if (!target) return;
+    target.reactions = data.reactions || {};
+    if (room === currentRoom) renderHistory();
 });
 
 socket.on('mensaje-sistema', (data) => {
@@ -597,6 +919,11 @@ if (recordBtn) {
             startRecording();
         }
     });
+}
+
+if (whisperBtn) {
+    whisperBtn.addEventListener('click', () => cycleWhisperMode());
+    setWhisperMode(0);
 }
 
 const emojiList = ['😀', '😂', '😍', '😘', '😎', '😢', '😭', '😡', '👍', '👏', '🎉', '💡', '🔥', '🌟', '🙏', '🥳', '🎁', '💖', '🙌', '🍕'];

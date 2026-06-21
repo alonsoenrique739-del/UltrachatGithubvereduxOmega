@@ -163,17 +163,49 @@ app.get('/api/me', (req, res) => {
 //consuma datos de la carpeta public
 app.use(express.static('public'));
 
-const roomHistory = { General: [] };
+const DEFAULT_ROOM = 'General';
+const ROOM_CONFIRM_CODE = '0000';
+const roomNames = new Set([DEFAULT_ROOM]);
+const roomHistory = {
+    [DEFAULT_ROOM]: []
+};
+
+function getRoomList() {
+    return [
+        DEFAULT_ROOM,
+        ...Array.from(roomNames).filter((room) => room !== DEFAULT_ROOM).sort((a, b) => a.localeCompare(b))
+    ];
+}
+
+function normalizeRoomName(value) {
+    return String(value || '').trim().slice(0, 40);
+}
+
+function ensureRoom(room) {
+    if (!roomHistory[room]) roomHistory[room] = [];
+    roomNames.add(room);
+}
+
+function emitRooms(target = io) {
+    target.emit('rooms-update', { rooms: getRoomList(), defaultRoom: DEFAULT_ROOM });
+}
+
+function createMessageId() {
+    return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 io.on('connection', (socket) => {
     console.log(`Un usuario se ha conectado (ID: ${socket.id})`);
     socket.username = '';
+    emitRooms(socket);
 
     socket.on('nuevoUsuario', (nombre) => {
         socket.username = nombre;
     });
 
     socket.on('joinRoom', (room) => {
+        const requestedRoom = normalizeRoomName(room);
+        room = roomNames.has(requestedRoom) ? requestedRoom : DEFAULT_ROOM;
         const previousRoom = socket.currentRoom;
         if (previousRoom === room) return;
 
@@ -191,7 +223,7 @@ io.on('connection', (socket) => {
 
         socket.join(room);
         socket.currentRoom = room;
-        if (!roomHistory[room]) roomHistory[room] = [];
+        ensureRoom(room);
         
         socket.emit('roomHistory', { room, history: roomHistory[room] });
         
@@ -204,36 +236,120 @@ io.on('connection', (socket) => {
         socket.broadcast.to(room).emit('mensaje-sistema', joinMessage);
     });
 
+    socket.on('room-create', (data, ack) => {
+        const roomName = normalizeRoomName(data?.name);
+        const code = String(data?.code || '');
+
+        if (code !== ROOM_CONFIRM_CODE) {
+            if (typeof ack === 'function') ack({ ok: false, error: 'Codigo de confirmacion invalido.' });
+            return;
+        }
+
+        if (roomName.length < 2) {
+            if (typeof ack === 'function') ack({ ok: false, error: 'El nombre de sala debe tener al menos 2 caracteres.' });
+            return;
+        }
+
+        if (roomNames.has(roomName)) {
+            if (typeof ack === 'function') ack({ ok: false, error: 'Esa sala ya existe.' });
+            return;
+        }
+
+        ensureRoom(roomName);
+        emitRooms();
+        io.to(DEFAULT_ROOM).emit('mensaje-sistema', {
+            type: 'system',
+            room: DEFAULT_ROOM,
+            mensaje: `${socket.username || 'Usuario'} ha creado la sala ${roomName}`
+        });
+
+        if (typeof ack === 'function') ack({ ok: true, room: roomName });
+    });
+
+    socket.on('room-delete', (data, ack) => {
+        const roomName = normalizeRoomName(data?.room);
+        const code = String(data?.code || '');
+
+        if (code !== ROOM_CONFIRM_CODE) {
+            if (typeof ack === 'function') ack({ ok: false, error: 'Codigo de confirmacion invalido.' });
+            return;
+        }
+
+        if (!roomNames.has(roomName)) {
+            if (typeof ack === 'function') ack({ ok: false, error: 'La sala no existe.' });
+            return;
+        }
+
+        if (roomName === DEFAULT_ROOM) {
+            if (typeof ack === 'function') ack({ ok: false, error: 'La sala General no se puede borrar.' });
+            return;
+        }
+
+        const roomMembers = io.sockets.adapter.rooms.get(roomName);
+        if (roomMembers) {
+            for (const memberId of roomMembers) {
+                const memberSocket = io.sockets.sockets.get(memberId);
+                if (!memberSocket) continue;
+                memberSocket.leave(roomName);
+                memberSocket.join(DEFAULT_ROOM);
+                memberSocket.currentRoom = DEFAULT_ROOM;
+                ensureRoom(DEFAULT_ROOM);
+                memberSocket.emit('roomHistory', { room: DEFAULT_ROOM, history: roomHistory[DEFAULT_ROOM] });
+            }
+        }
+
+        delete roomHistory[roomName];
+        roomNames.delete(roomName);
+        emitRooms();
+        io.emit('room-deleted', { deletedRoom: roomName, fallbackRoom: DEFAULT_ROOM });
+        io.to(DEFAULT_ROOM).emit('mensaje-sistema', {
+            type: 'system',
+            room: DEFAULT_ROOM,
+            mensaje: `${socket.username || 'Usuario'} ha borrado la sala ${roomName}`
+        });
+
+        if (typeof ack === 'function') ack({ ok: true, fallbackRoom: DEFAULT_ROOM });
+    });
+
     socket.on('mensaje-chat', (data) => {
         const room = data.room || socket.currentRoom || 'General';
+        const whisperSeconds = Math.max(0, Math.min(Number(data.whisperSeconds || 0), 30));
+        const id = createMessageId();
         const mensaje = {
+            id,
             type: 'texto',
             usuario: socket.username || 'Usuario',
             mensaje: data.mensaje,
             room,
-            hora: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            hora: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            reactions: {},
+            whisperSeconds,
+            expiresAt: whisperSeconds > 0 ? Date.now() + whisperSeconds * 1000 : null
         };
         if (!roomHistory[room]) roomHistory[room] = [];
-        roomHistory[room].push({
-            type: 'texto',
-            room,
-            usuario: mensaje.usuario,
-            mensaje: mensaje.mensaje,
-            hora: mensaje.hora
-        });
+        roomHistory[room].push(mensaje);
         io.to(room).emit('mensaje-chat', mensaje);
+
+        if (mensaje.expiresAt) {
+            setTimeout(() => {
+                if (!roomHistory[room]) return;
+                roomHistory[room] = roomHistory[room].filter((entry) => entry.id !== id);
+            }, whisperSeconds * 1000);
+        }
     });
 
     socket.on('upload', (fileObj, ack) => {
         const room = fileObj.room || socket.currentRoom || 'General';
         const usuario = socket.username || 'Usuario';
         const mensaje = {
+            id: createMessageId(),
             type: 'imagen',
             room,
             usuario,
             name: fileObj.name,
             dataUrl: fileObj.dataUrl,
-            hora: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            hora: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            reactions: {}
         };
         if (!roomHistory[room]) roomHistory[room] = [];
         roomHistory[room].push(mensaje);
@@ -245,16 +361,99 @@ io.on('connection', (socket) => {
         const room = data.room || socket.currentRoom || 'General';
         const usuario = socket.username || 'Usuario';
         const mensaje = {
+            id: createMessageId(),
             type: 'audio',
             room,
             usuario,
             dataUrl: data.dataUrl,
-            hora: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            playbackRate: Number(data.playbackRate || 1),
+            hora: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            reactions: {}
         };
         if (!roomHistory[room]) roomHistory[room] = [];
         roomHistory[room].push(mensaje);
         io.to(room).emit('mensaje-audio', mensaje);
         if (typeof ack === 'function') ack('ok');
+    });
+
+    socket.on('poll-create', (data) => {
+        const room = data.room || socket.currentRoom || 'General';
+        const options = Array.isArray(data.options)
+            ? data.options.map((opt) => String(opt || '').trim()).filter(Boolean).slice(0, 6)
+            : [];
+        const question = String(data.question || '').trim().slice(0, 160);
+        if (!question || options.length < 2) return;
+
+        const mensaje = {
+            id: createMessageId(),
+            type: 'poll',
+            room,
+            usuario: socket.username || 'Usuario',
+            poll: {
+                question,
+                options,
+                votes: options.map(() => 0),
+                voters: {}
+            },
+            hora: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        };
+        if (!roomHistory[room]) roomHistory[room] = [];
+        roomHistory[room].push(mensaje);
+        io.to(room).emit('poll-create', mensaje);
+    });
+
+    socket.on('poll-vote', (data) => {
+        const room = data.room || socket.currentRoom || 'General';
+        const messageId = String(data.messageId || '');
+        const optionIndex = Number(data.optionIndex);
+        const history = roomHistory[room] || [];
+        const pollMessage = history.find((entry) => entry.id === messageId && entry.type === 'poll');
+        if (!pollMessage || !Number.isInteger(optionIndex)) return;
+        if (optionIndex < 0 || optionIndex >= pollMessage.poll.options.length) return;
+
+        const voterId = socket.id;
+        const previous = pollMessage.poll.voters[voterId];
+        if (Number.isInteger(previous) && pollMessage.poll.votes[previous] > 0) {
+            pollMessage.poll.votes[previous] -= 1;
+        }
+        pollMessage.poll.voters[voterId] = optionIndex;
+        pollMessage.poll.votes[optionIndex] += 1;
+
+        io.to(room).emit('poll-update', {
+            room,
+            id: pollMessage.id,
+            poll: {
+                question: pollMessage.poll.question,
+                options: pollMessage.poll.options,
+                votes: pollMessage.poll.votes
+            }
+        });
+    });
+
+    socket.on('message-reaction', (data) => {
+        const room = data.room || socket.currentRoom || 'General';
+        const messageId = String(data.messageId || '');
+        const emoji = String(data.emoji || '').trim().slice(0, 4);
+        if (!emoji) return;
+        const history = roomHistory[room] || [];
+        const target = history.find((entry) => entry.id === messageId && ['texto', 'imagen', 'audio'].includes(entry.type));
+        if (!target) return;
+
+        if (!target.reactions) target.reactions = {};
+        if (!target.reactionByUser) target.reactionByUser = {};
+
+        const prevEmoji = target.reactionByUser[socket.id];
+        if (prevEmoji && target.reactions[prevEmoji] > 0) {
+            target.reactions[prevEmoji] -= 1;
+        }
+        target.reactionByUser[socket.id] = emoji;
+        target.reactions[emoji] = Number(target.reactions[emoji] || 0) + 1;
+
+        io.to(room).emit('message-reaction', {
+            room,
+            messageId,
+            reactions: target.reactions
+        });
     });
 
     socket.on('disconnect', () => {
