@@ -1,10 +1,8 @@
-const BACKEND_URL = (window.__BACKEND_URL__ || '').replace(/\/$/, '');
-
 function apiUrl(path) {
-    return BACKEND_URL ? `${BACKEND_URL}${path}` : path;
+    return path;
 }
 
-const socket = io(BACKEND_URL || undefined, {
+const socket = io(undefined, {
     transports: ['websocket', 'polling'],
     reconnectionAttempts: 5,
     reconnectionDelay: 500

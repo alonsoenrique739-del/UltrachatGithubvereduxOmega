@@ -207,6 +207,7 @@ io.on('connection', (socket) => {
     socket.on('mensaje-chat', (data) => {
         const room = data.room || socket.currentRoom || 'General';
         const mensaje = {
+            type: 'texto',
             usuario: socket.username || 'Usuario',
             mensaje: data.mensaje,
             room,
