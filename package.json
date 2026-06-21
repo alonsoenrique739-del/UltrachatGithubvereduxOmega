@@ -1,0 +1,22 @@
+{
+  "name": "superchat",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "emoji-js": "^3.9.0",
+    "express": "^5.2.1",
+    "express-session": "^1.10.0",
+    "firebase": "^12.14.0",
+    "socket.io": "^4.8.3"
+  }
+}

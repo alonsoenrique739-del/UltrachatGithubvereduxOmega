@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat</title>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="config.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <link rel="stylesheet" href="style.css">
+    
+</head>
+<body>
+
+    <header>
+        <div class="header-center">
+            <span class="title">Sala de chat</span>
+            <span class="subtitle">Chat general siempre disponible</span>
+        </div>
+        <span id="notification-badge" class="notification-badge">0</span>
+    </header>
+
+    <section id="auth-box" style="display:grid; gap:10px; padding:12px; border:1px solid #e5e7eb; border-radius:12px; margin:10px 12px 0; background:#111827; color:#f3f4f6;">
+        <strong>Cuenta local</strong>
+        <div class="auth-actions" style="display:flex; flex-wrap:wrap; gap:8px;">
+            <button id="show-register-btn" type="button" class="auth-toggle-btn" style="padding:8px 12px; border:1px solid #374151; border-radius:999px; background:#1f2937; color:#f3f4f6; cursor:pointer;">Registrarse</button>
+            <button id="show-login-btn" type="button" class="auth-toggle-btn" style="padding:8px 12px; border:1px solid #374151; border-radius:999px; background:#1f2937; color:#f3f4f6; cursor:pointer;">Iniciar sesión</button>
+            <button id="logout-btn" type="button" style="padding:8px 10px; border:none; border-radius:8px; background:#ef4444; color:white; cursor:pointer;">Cerrar sesión</button>
+        </div>
+    </section>
+
+    <div id="room-container">
+        <label for="room-select">Espacios:</label>
+        <select id="room-select" disabled>
+            <option value="General">General</option>
+            <option value="Tecnología">Tecnología</option>
+            <option value="Juegos">Juegos</option>
+        </select>
+    </div>
+    <div id="search-container">
+        <input id="search-input" type="search" placeholder="Buscar en el historial..." autocomplete="off">
+        <button id="search-clear-btn" type="button" aria-label="Borrar búsqueda">✕</button>
+    </div>
+    <div id="chat-container">
+        
+    </div>
+    <form id="form-container">
+        <input type="text" id="message-input" placeholder="Escribe tu mensaje..." autocomplete="off" required disabled>
+        <button type="submit" disabled>Enviar</button>
+        <button type="button" id="emoji-btn" disabled>😊</button>
+        <button type="button" id="send-file-btn" disabled>Enviar imagen</button>
+        <button type="button" id="record-btn" disabled>🎙️</button>
+        <span id="recording-indicator" class="recording-indicator hidden">● Grabando <span id="recording-time">0:00</span></span>
+        <input type="file" id="file-input" accept="image/*" style="display:none">
+        <div id="emoji-picker" class="emoji-picker hidden"></div>
+    </form>
+
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.14.0/firebase-app.js';
+        import { getAnalytics, logEvent } from 'https://www.gstatic.com/firebasejs/12.14.0/firebase-analytics.js';
+        import {
+            getAuth,
+            createUserWithEmailAndPassword,
+            signInWithEmailAndPassword,
+            signOut,
+            onAuthStateChanged,
+            setPersistence,
+            browserLocalPersistence
+        } from 'https://www.gstatic.com/firebasejs/12.14.0/firebase-auth.js';
+        import {
+            getDatabase,
+            ref,
+            set,
+            get
+        } from 'https://www.gstatic.com/firebasejs/12.14.0/firebase-database.js';
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyBIs1OVpQ_jzjTetLFxsUtN9yLBCuyJV_s",
+            authDomain: "omegachat-7895d.firebaseapp.com",
+            projectId: "omegachat-7895d",
+            databaseURL: "https://omegachat-7895d-default-rtdb.firebaseio.com",
+            storageBucket: "omegachat-7895d.firebasestorage.app",
+            messagingSenderId: "1089474092097",
+            appId: "1:1089474092097:web:3617c6606f3f42d2047ac0",
+            measurementId: "G-MQNSY5BE1C"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const analytics = getAnalytics(app);
+        const auth = getAuth(app);
+        const database = getDatabase(app);
+
+        await setPersistence(auth, browserLocalPersistence);
+
+        logEvent(analytics, 'page_view', {
+            page_title: document.title,
+            page_location: window.location.href
+        });
+
+        window.firebaseApp = app;
+        window.firebaseAnalytics = analytics;
+        window.firebaseAuth = auth;
+        window.firebaseDb = database;
+        window.firebaseAuthHelpers = {
+            createUserWithEmailAndPassword,
+            signInWithEmailAndPassword,
+            signOut,
+            onAuthStateChanged,
+            setPersistence,
+            browserLocalPersistence
+        };
+        window.firebaseDbHelpers = {
+            ref,
+            set,
+            get
+        };
+
+        console.log('Firebase initialized:', { app, analytics, auth, database });
+    </script>
+
+    <script src="chat.js"></script>
+</body>
+</html>
