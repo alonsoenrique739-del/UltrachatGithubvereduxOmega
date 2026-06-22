@@ -192,7 +192,7 @@ function removeMessageById(room, id) {
 }
 
 function addReactionButtons(item, container) {
-    if (item.usuario !== miNombre || !item.id) return;
+    if (item.usuario === miNombre || !item.id) return;
     const wrap = document.createElement('div');
     wrap.className = 'quick-reactions';
 
